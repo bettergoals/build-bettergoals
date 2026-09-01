@@ -175,7 +175,7 @@ export default function BoardView({
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch("/api/board", { cache: "no-store" });
+      const res = await fetch(`/api/board?t=${Date.now()}`, { cache: "no-store" });
       if (res.ok) setBoard(await res.json());
     } catch {
       /* keep last good board */
