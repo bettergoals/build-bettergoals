@@ -1,5 +1,7 @@
 import { SITE } from "./config";
 
+export type IdeaPR = { url: string; number: number; state: "open" | "merged" | "closed" };
+
 export type Idea = {
   number: number;
   title: string;
@@ -12,6 +14,7 @@ export type Idea = {
   labels: string[];
   state: "open" | "closed";
   updatedAt: string;
+  pr?: IdeaPR | null;
 };
 
 export type BoardColumnKey = "idea" | "discussing" | "doing" | "done";
@@ -28,6 +31,34 @@ export const COLUMN_ORDER: { key: BoardColumnKey; title: string; hint: string }[
   { key: "doing", title: "Doing", hint: "Claude is building these" },
   { key: "done", title: "Done", hint: "Live on the site" },
 ];
+
+type GitHubPull = {
+  number: number;
+  html_url: string;
+  state: "open" | "closed";
+  merged_at: string | null;
+  body?: string | null;
+  head: { ref: string };
+};
+
+/** Map issue number -> the PR Claude opened for it (branch `idea/N` or a closing keyword in the body). */
+function mapPullsToIdeas(pulls: GitHubPull[]): Map<number, IdeaPR> {
+  const map = new Map<number, IdeaPR>();
+  for (const pr of pulls) {
+    const nums = new Set<number>();
+    const branchMatch = /^idea\/(\d+)$/.exec(pr.head.ref);
+    if (branchMatch) nums.add(Number(branchMatch[1]));
+    for (const m of (pr.body ?? "").matchAll(/(?:close[sd]?|fixe?[sd]?|resolve[sd]?)\s+#(\d+)/gi)) {
+      nums.add(Number(m[1]));
+    }
+    const state: IdeaPR["state"] = pr.merged_at ? "merged" : pr.state;
+    for (const n of nums) {
+      // pulls arrive most-recently-updated first; keep the first match per issue
+      if (!map.has(n)) map.set(n, { url: pr.html_url, number: pr.number, state });
+    }
+  }
+  return map;
+}
 
 type GitHubIssue = {
   number: number;
@@ -119,12 +150,21 @@ export async function fetchBoard(): Promise<Board> {
   if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
 
   try {
-    const res = await fetch(
-      `https://api.github.com/repos/${SITE.repo}/issues?state=all&per_page=100&sort=updated`,
-      { headers, next: { revalidate: 15 } }
-    );
+    const [res, pullsRes] = await Promise.all([
+      fetch(`https://api.github.com/repos/${SITE.repo}/issues?state=all&per_page=100&sort=updated`, {
+        headers,
+        next: { revalidate: 15 },
+      }),
+      fetch(`https://api.github.com/repos/${SITE.repo}/pulls?state=all&per_page=100&sort=updated&direction=desc`, {
+        headers,
+        next: { revalidate: 15 },
+      }),
+    ]);
     if (!res.ok) throw new Error(`GitHub API ${res.status}`);
     const issues = (await res.json()) as GitHubIssue[];
+    const prByIssue = pullsRes.ok
+      ? mapPullsToIdeas((await pullsRes.json()) as GitHubPull[])
+      : new Map<number, IdeaPR>();
 
     const columns = { idea: [], discussing: [], doing: [], done: [] } as Board["columns"];
     for (const raw of issues) {
@@ -132,6 +172,7 @@ export async function fetchBoard(): Promise<Board> {
       const idea = toIdea(raw);
       // closed issues only show if explicitly done
       if (idea.state === "closed" && !idea.labels.includes("done")) continue;
+      idea.pr = prByIssue.get(idea.number) ?? null;
       columns[columnFor(idea)].push(idea);
     }
     for (const { key } of COLUMN_ORDER) columns[key].sort((a, b) => b.votes - a.votes);

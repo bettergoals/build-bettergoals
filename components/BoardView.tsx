@@ -62,6 +62,23 @@ function IdeaCard({
         <span>·</span>
         <a href={idea.url} target="_blank" rel="noreferrer" className="hover:underline">💬 {idea.comments}</a>
         {endorsed && <span className="font-semibold text-sooner">endorsed</span>}
+        {idea.pr && (
+          <a
+            href={idea.pr.url}
+            target="_blank"
+            rel="noreferrer"
+            className={`rounded-full px-2 py-0.5 font-bold ${
+              idea.pr.state === "merged"
+                ? "bg-sooner/15 text-sooner"
+                : idea.pr.state === "open"
+                  ? "bg-happier/15 text-happier"
+                  : "bg-ink/10 text-ink-soft"
+            }`}
+            title={`Pull request #${idea.pr.number} (${idea.pr.state}) — review the build`}
+          >
+            {idea.pr.state === "merged" ? "PR ✓" : "PR ↗"}
+          </a>
+        )}
         {canMove && (
           <select
             aria-label="Move to column"
