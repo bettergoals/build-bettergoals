@@ -1,8 +1,12 @@
 import { NextResponse } from "next/server";
 import { BUILDER_COOKIE, passcodeValid } from "@/lib/builder";
+import { clientKey, rateLimit } from "@/lib/ratelimit";
 
 /** Exchanges the facilitator passcode for an httpOnly cookie that authorises board moves. */
 export async function POST(req: Request) {
+  if (!rateLimit(clientKey(req, "unlock"), 10, 60_000)) {
+    return NextResponse.json({ error: "Too many attempts — wait a minute." }, { status: 429 });
+  }
   let body: { passcode?: string };
   try {
     body = await req.json();

@@ -6,10 +6,14 @@ import {
   SESSION_COOKIE,
   verifyOtpToken,
 } from "@/lib/auth";
+import { clientKey, rateLimit } from "@/lib/ratelimit";
 
 export async function POST(req: NextRequest) {
   if (!authEnabled()) {
     return NextResponse.json({ error: "Email sign-in isn't enabled yet." }, { status: 501 });
+  }
+  if (!rateLimit(clientKey(req, "otp-verify"), 10, 60_000)) {
+    return NextResponse.json({ error: "Too many attempts — wait a minute." }, { status: 429 });
   }
   let body: { pin?: unknown; name?: unknown };
   try {

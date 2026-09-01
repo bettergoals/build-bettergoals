@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
 import { authEnabled, createOtpToken, generatePin, normalizeEmail, OTP_COOKIE, sendPinEmail } from "@/lib/auth";
+import { clientKey, rateLimit } from "@/lib/ratelimit";
 
 export async function POST(req: Request) {
   if (!authEnabled()) {
     return NextResponse.json({ error: "Email sign-in isn't enabled yet." }, { status: 501 });
+  }
+  if (!rateLimit(clientKey(req, "otp-request"), 5, 60_000)) {
+    return NextResponse.json({ error: "Too many requests — wait a minute." }, { status: 429 });
   }
   let body: { email?: unknown };
   try {
