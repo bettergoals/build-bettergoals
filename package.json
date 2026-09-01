@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "dev:live": "GITHUB_TOKEN=$(gh auth token) BOARD_PASSCODE=local-dev next dev -p 3001",
+    "dev:live": "GITHUB_TOKEN=$(gh auth token) BOARD_PASSCODE=local-dev SESSION_SECRET=local-secret next dev -p 3001",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"

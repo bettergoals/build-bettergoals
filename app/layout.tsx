@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import AuthWidget from "@/components/AuthWidget";
 import { PREVIEW_URL, PRODUCT_URL, REPO_URL, SITE } from "@/lib/config";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
@@ -35,6 +36,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   {item.label}
                 </a>
               ))}
+              <AuthWidget />
             </nav>
           </div>
         </header>
