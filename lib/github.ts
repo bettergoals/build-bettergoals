@@ -2,6 +2,15 @@ import { SITE } from "./config";
 
 export type IdeaPR = { url: string; number: number; state: "open" | "merged" | "closed" };
 
+export type IdeaBuild = {
+  status: "queued" | "in_progress" | "failed";
+  url: string;
+  startedAt: string;
+  /** live task progress parsed from Claude's tracking comment on the issue */
+  tasksDone?: number;
+  tasksTotal?: number;
+};
+
 export type Idea = {
   number: number;
   title: string;
@@ -15,6 +24,7 @@ export type Idea = {
   state: "open" | "closed";
   updatedAt: string;
   pr?: IdeaPR | null;
+  build?: IdeaBuild | null;
 };
 
 export type BoardColumnKey = "idea" | "discussing" | "doing" | "done";
@@ -58,6 +68,66 @@ function mapPullsToIdeas(pulls: GitHubPull[]): Map<number, IdeaPR> {
     }
   }
   return map;
+}
+
+type GitHubRun = {
+  name: string;
+  display_title: string;
+  status: "queued" | "in_progress" | "completed" | string;
+  conclusion: string | null;
+  html_url: string;
+  run_started_at: string;
+};
+
+/** Map issue number -> its most recent build run (run-name "idea-N: title", falling back to title match). */
+function mapRunsToIdeas(runs: GitHubRun[], numberByTitle: Map<string, number>): Map<number, IdeaBuild> {
+  const map = new Map<number, IdeaBuild>();
+  for (const run of runs) {
+    const m = /^idea-(\d+):/.exec(run.name);
+    const n = m ? Number(m[1]) : numberByTitle.get(run.display_title) ?? numberByTitle.get(run.name);
+    if (n === undefined) continue;
+    if (map.has(n)) continue; // runs arrive newest first; keep the latest per issue
+    if (run.status === "completed") {
+      // skipped = a non-doing label event; success is represented by the PR chip instead
+      if (run.conclusion === "failure" || run.conclusion === "timed_out") {
+        map.set(n, { status: "failed", url: run.html_url, startedAt: run.run_started_at });
+      } else {
+        map.set(n, null as unknown as IdeaBuild); // block older runs from surfacing
+      }
+    } else {
+      map.set(n, {
+        status: run.status === "queued" ? "queued" : "in_progress",
+        url: run.html_url,
+        startedAt: run.run_started_at,
+      });
+    }
+  }
+  for (const [n, v] of map) if (!v) map.delete(n);
+  return map;
+}
+
+/** Parse "- [x] / - [ ]" counts from Claude's live tracking comment on an in-flight issue. */
+async function fetchTaskProgress(
+  issueNumber: number,
+  headers: Record<string, string>
+): Promise<{ done: number; total: number } | null> {
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${SITE.repo}/issues/${issueNumber}/comments?per_page=100`,
+      { headers, next: { revalidate: 15 } }
+    );
+    if (!res.ok) return null;
+    const comments = (await res.json()) as { body?: string | null; user?: { type?: string } | null }[];
+    for (let i = comments.length - 1; i >= 0; i--) {
+      const body = comments[i].body ?? "";
+      const done = (body.match(/- \[x\]/gi) ?? []).length;
+      const open = (body.match(/- \[ \]/g) ?? []).length;
+      if (done + open > 0) return { done, total: done + open };
+    }
+  } catch {
+    /* progress is best-effort */
+  }
+  return null;
 }
 
 type GitHubIssue = {
@@ -150,7 +220,7 @@ export async function fetchBoard(): Promise<Board> {
   if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
 
   try {
-    const [res, pullsRes] = await Promise.all([
+    const [res, pullsRes, runsRes] = await Promise.all([
       fetch(`https://api.github.com/repos/${SITE.repo}/issues?state=all&per_page=100&sort=updated`, {
         headers,
         next: { revalidate: 15 },
@@ -159,12 +229,23 @@ export async function fetchBoard(): Promise<Board> {
         headers,
         next: { revalidate: 15 },
       }),
+      fetch(
+        `https://api.github.com/repos/${SITE.repo}/actions/workflows/build-endorsed-idea.yml/runs?per_page=30`,
+        { headers, next: { revalidate: 15 } }
+      ),
     ]);
     if (!res.ok) throw new Error(`GitHub API ${res.status}`);
     const issues = (await res.json()) as GitHubIssue[];
     const prByIssue = pullsRes.ok
       ? mapPullsToIdeas((await pullsRes.json()) as GitHubPull[])
       : new Map<number, IdeaPR>();
+    const numberByTitle = new Map(issues.filter((i) => !i.pull_request).map((i) => [i.title, i.number]));
+    const buildByIssue = runsRes.ok
+      ? mapRunsToIdeas(
+          ((await runsRes.json()) as { workflow_runs: GitHubRun[] }).workflow_runs ?? [],
+          numberByTitle
+        )
+      : new Map<number, IdeaBuild>();
 
     const columns = { idea: [], discussing: [], doing: [], done: [] } as Board["columns"];
     for (const raw of issues) {
@@ -173,8 +254,22 @@ export async function fetchBoard(): Promise<Board> {
       // closed issues only show if explicitly done
       if (idea.state === "closed" && !idea.labels.includes("done")) continue;
       idea.pr = prByIssue.get(idea.number) ?? null;
+      idea.build = buildByIssue.get(idea.number) ?? null;
       columns[columnFor(idea)].push(idea);
     }
+
+    // live task progress for the (few) builds currently in flight
+    await Promise.all(
+      [...columns.doing, ...columns.discussing].map(async (idea) => {
+        if (idea.build && idea.build.status !== "failed") {
+          const progress = await fetchTaskProgress(idea.number, headers);
+          if (progress) {
+            idea.build.tasksDone = progress.done;
+            idea.build.tasksTotal = progress.total;
+          }
+        }
+      })
+    );
     for (const { key } of COLUMN_ORDER) columns[key].sort((a, b) => b.votes - a.votes);
     return { columns, source: "github", fetchedAt: new Date().toISOString() };
   } catch {

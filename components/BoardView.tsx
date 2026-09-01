@@ -12,6 +12,11 @@ const COLUMN_ACCENT: Record<BoardColumnKey, string> = {
   done: "border-t-sooner",
 };
 
+function elapsed(startedAt: string): string {
+  const mins = Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 60000));
+  return mins > 0 ? ` ${mins}m` : "";
+}
+
 function IdeaCard({
   idea,
   column,
@@ -62,6 +67,33 @@ function IdeaCard({
         <span>·</span>
         <a href={idea.url} target="_blank" rel="noreferrer" className="hover:underline">💬 {idea.comments}</a>
         {endorsed && <span className="font-semibold text-sooner">endorsed</span>}
+        {idea.build && idea.build.status !== "failed" && (
+          <a
+            href={idea.build.url}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1.5 rounded-full bg-happier/15 px-2 py-0.5 font-bold text-happier"
+            title="Claude Code is building this — click to watch the run"
+          >
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-happier opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-happier" />
+            </span>
+            building{elapsed(idea.build.startedAt)}
+            {idea.build.tasksTotal ? ` · ${idea.build.tasksDone}/${idea.build.tasksTotal}` : ""}
+          </a>
+        )}
+        {idea.build?.status === "failed" && !idea.pr && (
+          <a
+            href={idea.build.url}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-full bg-red-100 px-2 py-0.5 font-bold text-red-600"
+            title="The build failed — click for logs"
+          >
+            build failed ↗
+          </a>
+        )}
         {idea.pr && (
           <a
             href={idea.pr.url}
