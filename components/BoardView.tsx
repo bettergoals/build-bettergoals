@@ -251,6 +251,21 @@ export default function BoardView({
         );
         if (!confirmed) return;
       }
+      // Done is meant to arrive on its own when the PR merges and the issue
+      // closes. Moving a card there by hand only swaps the label — it ships
+      // nothing — so say so plainly when the work is not actually merged.
+      if (to === "done" && idea.pr?.state !== "merged") {
+        const detail = idea.pr
+          ? `Its pull request #${idea.pr.number} is ${idea.pr.state}, not merged.`
+          : `No pull request is linked to this idea yet.`;
+        const confirmed = window.confirm(
+          `Move “${idea.title}” to Done?\n\n${detail}\n\n` +
+            `Done only changes the label — it does not merge anything, and the website ` +
+            `will not update. The label normally applies itself once the pull request ` +
+            `merges and issue #${idea.number} closes.`
+        );
+        if (!confirmed) return;
+      }
       // optimistic update
       const nextState: Idea["state"] =
         to === "cancelled" ? "closed" : from === "cancelled" ? "open" : idea.state;
