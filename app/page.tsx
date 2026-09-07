@@ -16,7 +16,9 @@ export default async function BuilderBoard() {
         👍 or join the discussion. With the facilitator passcode, drag an endorsed
         idea to <strong>Doing</strong> — Claude Code builds it into{" "}
         <a href="https://bettergoals.ai" className="underline underline-offset-2">bettergoals.ai</a>{" "}
-        and opens a pull request for the community to review on preview.
+        and opens a pull request for the community to review on preview. Changed your mind? Move a
+        card to <strong>Cancelled</strong> and its issue closes as not planned — move it back to an
+        active column any time to reopen it.
       </p>
       <div className="mt-8">
         <BoardView initial={board} builder initialUnlocked={unlocked} />

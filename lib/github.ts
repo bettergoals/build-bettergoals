@@ -27,7 +27,10 @@ export type Idea = {
   build?: IdeaBuild | null;
 };
 
-export type BoardColumnKey = "idea" | "discussing" | "doing" | "done";
+export type BoardColumnKey = "idea" | "discussing" | "doing" | "done" | "cancelled";
+
+/** Columns where the idea's issue is closed on GitHub rather than open. */
+export const CLOSED_COLUMNS: BoardColumnKey[] = ["done", "cancelled"];
 
 export type Board = {
   columns: Record<BoardColumnKey, Idea[]>;
@@ -40,6 +43,7 @@ export const COLUMN_ORDER: { key: BoardColumnKey; title: string; hint: string }[
   { key: "discussing", title: "Discussing", hint: "Being shaped by the group" },
   { key: "doing", title: "Doing", hint: "Claude is building these" },
   { key: "done", title: "Done", hint: "Live on the site" },
+  { key: "cancelled", title: "Cancelled", hint: "Stopped — not being built" },
 ];
 
 type GitHubPull = {
@@ -170,6 +174,9 @@ function toIdea(issue: GitHubIssue): Idea {
 
 function columnFor(idea: Idea): BoardColumnKey {
   // Most-advanced label wins so an idea only appears in one column.
+  // `cancelled` outranks everything: a cancelled idea keeps whatever stage
+  // label it was cancelled from, but belongs in Cancelled.
+  if (idea.labels.includes("cancelled")) return "cancelled";
   if (idea.labels.includes("done")) return "done";
   if (idea.labels.includes("doing")) return "doing";
   if (idea.labels.includes("discussing")) return "discussing";
@@ -190,10 +197,20 @@ const DEMO_IDEAS: Partial<Record<BoardColumnKey, Partial<Idea>[]>> = {
   done: [
     { number: 105, title: "The bettergoals.ai site itself", excerpt: "This site — built live with the community, one endorsed idea at a time.", votes: 7, author: "demo" },
   ],
+  cancelled: [
+    { number: 106, title: "Gamified leaderboard of team OKR scores", excerpt: "Rank teams by how many key results they hit. Cancelled — scoring teams against each other pulls against better value sooner safer happier.", votes: 1, author: "demo" },
+  ],
 };
 
+/** An empty bucket per column, derived from COLUMN_ORDER so new stages can't be missed. */
+function emptyColumns(): Board["columns"] {
+  const columns = {} as Board["columns"];
+  for (const { key } of COLUMN_ORDER) columns[key] = [];
+  return columns;
+}
+
 function demoBoard(): Board {
-  const columns = { idea: [], discussing: [], doing: [], done: [] } as Board["columns"];
+  const columns = emptyColumns();
   for (const { key } of COLUMN_ORDER) {
     columns[key] = (DEMO_IDEAS[key] ?? []).map((d) => ({
       number: d.number ?? 0,
@@ -205,7 +222,7 @@ function demoBoard(): Board {
       author: d.author ?? "demo",
       avatar: "",
       labels: [key],
-      state: "open",
+      state: CLOSED_COLUMNS.includes(key) ? "closed" : "open",
       updatedAt: new Date().toISOString(),
     }));
   }
@@ -247,12 +264,13 @@ export async function fetchBoard(): Promise<Board> {
         )
       : new Map<number, IdeaBuild>();
 
-    const columns = { idea: [], discussing: [], doing: [], done: [] } as Board["columns"];
+    const columns = emptyColumns();
     for (const raw of issues) {
       if (raw.pull_request) continue;
       const idea = toIdea(raw);
-      // closed issues only show if explicitly done
-      if (idea.state === "closed" && !idea.labels.includes("done")) continue;
+      // closed issues only show if explicitly done or cancelled
+      if (idea.state === "closed" && !idea.labels.includes("done") && !idea.labels.includes("cancelled"))
+        continue;
       idea.pr = prByIssue.get(idea.number) ?? null;
       idea.build = buildByIssue.get(idea.number) ?? null;
       columns[columnFor(idea)].push(idea);

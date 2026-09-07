@@ -10,6 +10,7 @@ const COLUMN_ACCENT: Record<BoardColumnKey, string> = {
   discussing: "border-t-safer",
   doing: "border-t-happier",
   done: "border-t-sooner",
+  cancelled: "border-t-ink/15",
 };
 
 function elapsed(startedAt: string): string {
@@ -29,6 +30,7 @@ function IdeaCard({
   canMove: boolean;
 }) {
   const endorsed = idea.votes >= ENDORSE_THRESHOLD;
+  const cancelled = column === "cancelled";
   return (
     <div
       draggable={canMove}
@@ -39,10 +41,23 @@ function IdeaCard({
       }}
       className={`rounded-xl border bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
         canMove ? "cursor-grab active:cursor-grabbing" : ""
-      } ${endorsed ? "border-sooner/60 ring-1 ring-sooner/30" : "border-ink/10"}`}
+      } ${
+        cancelled
+          ? "border-ink/10 opacity-70"
+          : endorsed
+            ? "border-sooner/60 ring-1 ring-sooner/30"
+            : "border-ink/10"
+      }`}
     >
       <div className="flex items-start justify-between gap-2">
-        <a href={idea.url} target="_blank" rel="noreferrer" className="text-sm font-semibold leading-snug hover:underline">
+        <a
+          href={idea.url}
+          target="_blank"
+          rel="noreferrer"
+          className={`text-sm font-semibold leading-snug hover:underline ${
+            cancelled ? "text-ink-soft line-through decoration-ink/40" : ""
+          }`}
+        >
           {idea.title}
         </a>
         <a
@@ -222,11 +237,29 @@ export default function BoardView({
   const moveIdea = useCallback(
     async (idea: Idea, from: BoardColumnKey, to: BoardColumnKey) => {
       if (from === to) return;
+      // Cancelling closes the GitHub issue, so ask before doing it.
+      if (to === "cancelled") {
+        const building = Boolean(idea.build && idea.build.status !== "failed");
+        const confirmed = window.confirm(
+          `Cancel “${idea.title}”?\n\n` +
+            `It moves to Cancelled and issue #${idea.number} is closed as not planned. ` +
+            `Move the card back to an active column to reopen it.` +
+            (building
+              ? `\n\nHeads up: a build is already in flight. Cancelling does not stop it — ` +
+                `stop the GitHub Actions run too if you want it to halt.`
+              : "")
+        );
+        if (!confirmed) return;
+      }
       // optimistic update
+      const nextState: Idea["state"] =
+        to === "cancelled" ? "closed" : from === "cancelled" ? "open" : idea.state;
       setBoard((prev) => {
         const columns = { ...prev.columns };
         columns[from] = columns[from].filter((i) => i.number !== idea.number);
-        columns[to] = [...columns[to], { ...idea, labels: [to] }].sort((a, b) => b.votes - a.votes);
+        columns[to] = [...columns[to], { ...idea, labels: [to], state: nextState }].sort(
+          (a, b) => b.votes - a.votes
+        );
         return { ...prev, columns };
       });
       try {
@@ -240,6 +273,10 @@ export default function BoardView({
           throw new Error(data?.error ?? `Move failed (${res.status})`);
         }
         if (to === "doing") showToast(`🤖 “${idea.title}” moved to Doing — Claude Code will pick it up.`);
+        else if (to === "cancelled")
+          showToast(`🛑 “${idea.title}” cancelled — issue #${idea.number} closed as not planned.`);
+        else if (from === "cancelled")
+          showToast(`↩️ “${idea.title}” is back in play — issue #${idea.number} reopened.`);
       } catch (err) {
         showToast(err instanceof Error ? err.message : "Move failed — reverting.");
         refresh();
@@ -291,7 +328,7 @@ export default function BoardView({
           + Add an idea
         </a>
       </div>
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {COLUMN_ORDER.map(({ key, title, hint }) => (
           <section
             key={key}
@@ -315,7 +352,11 @@ export default function BoardView({
             <div className="flex min-h-16 flex-col gap-3">
               {board.columns[key].length === 0 ? (
                 <p className="rounded-xl border border-dashed border-ink/20 p-4 text-center text-xs text-ink-soft">
-                  {canMove ? "Drop an idea here" : "Nothing here yet"}
+                  {canMove
+                    ? key === "cancelled"
+                      ? "Drop an idea here to cancel it"
+                      : "Drop an idea here"
+                    : "Nothing here yet"}
                 </p>
               ) : (
                 board.columns[key].map((idea) => (
