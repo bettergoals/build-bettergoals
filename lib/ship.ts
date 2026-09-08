@@ -170,7 +170,7 @@ async function promotePreview(
  * linked (there is nothing to ship — the caller may still relabel).
  */
 export async function shipIdea(number: number, title: string, headers: Headers): Promise<ShipResult | null> {
-  const linked = (await fetchIdeaPulls(headers, { cache: "no-store" })).get(number);
+  const linked = (await fetchIdeaPulls(headers, { fresh: true })).get(number);
   if (!linked) return null;
 
   const repo = linked.repo;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Board, BoardColumnKey, Idea } from "@/lib/github";
 import { COLUMN_ORDER } from "@/lib/github";
 import { ENDORSE_THRESHOLD, NEW_IDEA_URL } from "@/lib/config";
@@ -13,9 +13,155 @@ const COLUMN_ACCENT: Record<BoardColumnKey, string> = {
   cancelled: "border-t-ink/15",
 };
 
+/** How often a visible tab re-reads the board. Hidden tabs do not poll at all. */
+const POLL_MS = 10_000;
+/** Give up re-applying an unconfirmed move after this long and trust the server. */
+const PENDING_TTL_MS = 90_000;
+
 function elapsed(startedAt: string): string {
   const mins = Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 60000));
   return mins > 0 ? ` ${mins}m` : "";
+}
+
+/** A move we have made locally but not yet seen reflected in a server response. */
+type PendingMove = { to: BoardColumnKey; at: number };
+
+function movedIdea(idea: Idea, from: BoardColumnKey, to: BoardColumnKey): Idea {
+  const state: Idea["state"] =
+    to === "cancelled" ? "closed" : from === "cancelled" ? "open" : idea.state;
+  return { ...idea, labels: [to], state };
+}
+
+function placeIdea(
+  columns: Board["columns"],
+  idea: Idea,
+  from: BoardColumnKey,
+  to: BoardColumnKey
+): Board["columns"] {
+  const next = {} as Board["columns"];
+  // Clear the card out of every column before re-seating it: a poll can land
+  // between a drag starting and this update, so its old home is not reliably
+  // `from`, and appending blindly would leave the same card in two columns.
+  for (const { key } of COLUMN_ORDER) {
+    next[key] = columns[key].filter((i) => i.number !== idea.number);
+  }
+  next[to] = [...next[to], movedIdea(idea, from, to)].sort((a, b) => b.votes - a.votes);
+  return next;
+}
+
+function columnOf(columns: Board["columns"], number: number): BoardColumnKey | undefined {
+  return COLUMN_ORDER.map((c) => c.key).find((key) =>
+    columns[key].some((i) => i.number === number)
+  );
+}
+
+/**
+ * Re-applies moves the server has not caught up with yet. GitHub responses are
+ * cached for a few seconds, so a poll landing just after you move a card still
+ * describes the old world — without this the card snaps back to its old column
+ * and then jumps forward again a tick later, which reads as the board fighting
+ * you. Entries clear themselves as soon as the server agrees.
+ */
+function applyPendingMoves(board: Board, pending: Map<number, PendingMove>): Board {
+  if (pending.size === 0) return board;
+  const cutoff = Date.now() - PENDING_TTL_MS;
+  let columns = board.columns;
+  for (const [number, move] of pending) {
+    const from = columnOf(columns, number);
+    if (from === move.to || move.at < cutoff) {
+      pending.delete(number);
+      continue;
+    }
+    if (!from) continue; // not on the board at all — nothing to re-place
+    const idea = columns[from].find((i) => i.number === number);
+    if (idea) columns = placeIdea(columns, idea, from, move.to);
+  }
+  return columns === board.columns ? board : { ...board, columns };
+}
+
+/** fetchedAt changes on every response, so compare the cards to spot real news. */
+function sameBoard(a: Board, b: Board): boolean {
+  return a.source === b.source && JSON.stringify(a.columns) === JSON.stringify(b.columns);
+}
+
+function sinceLabel(ms: number): string {
+  const secs = Math.round(ms / 1000);
+  if (secs < 10) return "just now";
+  if (secs < 60) return `${Math.round(secs / 5) * 5}s ago`;
+  const mins = Math.round(secs / 60);
+  return mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
+}
+
+/**
+ * A ticking clock shared by every age label, as an external store. The server
+ * (and the first client render) see 0 so there is nothing to mismatch on
+ * hydration, and the label advances without state being set inside an effect.
+ */
+const clock = {
+  now: 0,
+  listeners: new Set<() => void>(),
+  timer: null as ReturnType<typeof setInterval> | null,
+  subscribe(listener: () => void) {
+    clock.listeners.add(listener);
+    clock.now = Date.now();
+    clock.timer ??= setInterval(() => {
+      clock.now = Date.now();
+      for (const l of clock.listeners) l();
+    }, 5000);
+    return () => {
+      clock.listeners.delete(listener);
+      if (clock.listeners.size === 0 && clock.timer) {
+        clearInterval(clock.timer);
+        clock.timer = null;
+      }
+    };
+  },
+  getSnapshot: () => clock.now,
+  getServerSnapshot: () => 0,
+};
+
+/**
+ * Says out loud that the board keeps itself up to date, so nobody reaches for
+ * the browser refresh button — plus a manual nudge for the impatient.
+ */
+function LiveStatus({
+  syncedAt,
+  syncing,
+  offline,
+  onRefresh,
+}: {
+  syncedAt: number | null;
+  syncing: boolean;
+  offline: boolean;
+  onRefresh: () => void;
+}) {
+  const now = useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getServerSnapshot);
+  const age = now && syncedAt ? sinceLabel(now - syncedAt) : null;
+
+  return (
+    <span className="inline-flex items-center gap-2 text-xs text-ink-soft">
+      <span className="relative flex h-2 w-2">
+        {!offline && (
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sooner opacity-75 motion-reduce:hidden" />
+        )}
+        <span
+          className={`relative inline-flex h-2 w-2 rounded-full ${offline ? "bg-red-500" : "bg-sooner"}`}
+        />
+      </span>
+      <span>
+        {offline ? "Reconnecting…" : age ? `Checked ${age}` : "Keeping itself up to date"}
+      </span>
+      <button
+        type="button"
+        onClick={onRefresh}
+        disabled={syncing}
+        className="rounded-full border border-ink/15 px-2 py-0.5 font-medium hover:bg-ink/5 disabled:opacity-50"
+        title="Check GitHub right now — the board does this on its own every few seconds"
+      >
+        {syncing ? "Checking…" : "Refresh now"}
+      </button>
+    </span>
+  );
 }
 
 function IdeaCard({
@@ -213,6 +359,10 @@ export default function BoardView({
   const [dragOver, setDragOver] = useState<BoardColumnKey | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [syncedAt, setSyncedAt] = useState<number | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [offline, setOffline] = useState(false);
+  const pending = useRef(new Map<number, PendingMove>());
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -220,18 +370,54 @@ export default function BoardView({
     toastTimer.current = setTimeout(() => setToast(null), 4000);
   }, []);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (fresh = false) => {
+    setSyncing(true);
     try {
-      const res = await fetch(`/api/board?t=${Date.now()}`, { cache: "no-store" });
-      if (res.ok) setBoard(await res.json());
+      const res = await fetch(`/api/board?t=${Date.now()}${fresh ? "&fresh=1" : ""}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) throw new Error(`Board ${res.status}`);
+      const next = applyPendingMoves((await res.json()) as Board, pending.current);
+      // Most polls bring no news; skipping those keeps drags and selects steady.
+      setBoard((prev) => (sameBoard(prev, next) ? prev : next));
+      setSyncedAt(Date.now());
+      setOffline(false);
     } catch {
-      /* keep last good board */
+      setOffline(true); // keep the last good board on screen
+    } finally {
+      setSyncing(false);
     }
   }, []);
 
   useEffect(() => {
-    const id = setInterval(refresh, 15000);
-    return () => clearInterval(id);
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      timer ??= setInterval(() => refresh(), POLL_MS);
+    };
+    const stop = () => {
+      if (timer) clearInterval(timer);
+      timer = null;
+    };
+    // A hidden tab burns GitHub quota on a board nobody is watching, and what
+    // you want on returning is the truth immediately — so poll only while
+    // visible, and take an uncached read the moment the tab (or the network)
+    // comes back. The first render already arrived fresh from the server.
+    const sync = () => {
+      if (document.visibilityState === "visible") {
+        refresh(true);
+        start();
+      } else {
+        stop();
+      }
+    };
+    document.addEventListener("visibilitychange", sync);
+    window.addEventListener("online", sync);
+    if (document.visibilityState === "visible") start();
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", sync);
+      window.removeEventListener("online", sync);
+    };
   }, [refresh]);
 
   const moveIdea = useCallback(
@@ -269,17 +455,10 @@ export default function BoardView({
             `only the label changes and the website will not update.`;
         if (!window.confirm(message)) return;
       }
-      // optimistic update
-      const nextState: Idea["state"] =
-        to === "cancelled" ? "closed" : from === "cancelled" ? "open" : idea.state;
-      setBoard((prev) => {
-        const columns = { ...prev.columns };
-        columns[from] = columns[from].filter((i) => i.number !== idea.number);
-        columns[to] = [...columns[to], { ...idea, labels: [to], state: nextState }].sort(
-          (a, b) => b.votes - a.votes
-        );
-        return { ...prev, columns };
-      });
+      // Optimistic update, remembered until a server response agrees — polls in
+      // flight must not drag the card back to where it used to be.
+      pending.current.set(idea.number, { to, at: Date.now() });
+      setBoard((prev) => ({ ...prev, columns: placeIdea(prev.columns, idea, from, to) }));
       try {
         const res = await fetch("/api/board/move", {
           method: "POST",
@@ -309,9 +488,13 @@ export default function BoardView({
           showToast(`🛑 “${idea.title}” cancelled — issue #${idea.number} closed as not planned.`);
         else if (from === "cancelled")
           showToast(`↩️ “${idea.title}” is back in play — issue #${idea.number} reopened.`);
+        // Settle against the real board straight away so the PR and build chips
+        // that follow a move appear without anyone touching the browser.
+        refresh(true);
       } catch (err) {
         showToast(err instanceof Error ? err.message : "Move failed — reverting.");
-        refresh();
+        pending.current.delete(idea.number); // stop defending a move that never landed
+        refresh(true);
       }
     },
     [refresh, showToast]
@@ -339,18 +522,28 @@ export default function BoardView({
     <div>
       {builder && !unlocked && <UnlockBar onUnlocked={() => setUnlocked(true)} />}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-ink-soft">
-          {board.source === "github" ? (
-            <>
-              Live from GitHub · {ENDORSE_THRESHOLD}+ 👍 = endorsed
-              {canMove && <> · drag cards between columns</>}
-            </>
-          ) : (
-            <span className="rounded-full bg-happier/15 px-3 py-1 font-medium text-happier">
-              Demo data — connect the GitHub repo to go live
-            </span>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <p className="text-sm text-ink-soft">
+            {board.source === "github" ? (
+              <>
+                Live from GitHub · {ENDORSE_THRESHOLD}+ 👍 = endorsed
+                {canMove && <> · drag cards between columns</>}
+              </>
+            ) : (
+              <span className="rounded-full bg-happier/15 px-3 py-1 font-medium text-happier">
+                Demo data — connect the GitHub repo to go live
+              </span>
+            )}
+          </p>
+          {board.source === "github" && (
+            <LiveStatus
+              syncedAt={syncedAt}
+              syncing={syncing}
+              offline={offline}
+              onRefresh={() => refresh(true)}
+            />
           )}
-        </p>
+        </div>
         <a
           href={NEW_IDEA_URL}
           target="_blank"

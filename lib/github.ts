@@ -98,10 +98,9 @@ function mapPullsToIdeas(pulls: GitHubPull[], prRepo: string, into = new Map<num
  */
 export async function fetchIdeaPulls(
   headers: Record<string, string>,
-  opts: { cache?: "no-store" } = {}
+  { fresh = false }: { fresh?: boolean } = {}
 ): Promise<Map<number, IdeaPR>> {
-  const init: RequestInit & { next?: { revalidate: number } } =
-    opts.cache === "no-store" ? { headers, cache: "no-store" } : { headers, next: { revalidate: 15 } };
+  const init = { headers, ...readMode(fresh) };
   const repos = [SITE.repo, BUILD_REPO];
   const results = await Promise.all(
     repos.map(async (repo) => {
@@ -161,12 +160,13 @@ function mapRunsToIdeas(runs: GitHubRun[], numberByTitle: Map<string, number>): 
 /** Parse "- [x] / - [ ]" counts from Claude's live tracking comment on an in-flight issue. */
 async function fetchTaskProgress(
   issueNumber: number,
-  headers: Record<string, string>
+  headers: Record<string, string>,
+  fresh: boolean
 ): Promise<{ done: number; total: number } | null> {
   try {
     const res = await fetch(
       `https://api.github.com/repos/${SITE.repo}/issues/${issueNumber}/comments?per_page=100`,
-      { headers, next: { revalidate: 15 } }
+      { headers, ...readMode(fresh) }
     );
     if (!res.ok) return null;
     const comments = (await res.json()) as { body?: string | null; user?: { type?: string } | null }[];
@@ -250,6 +250,22 @@ const DEMO_IDEAS: Partial<Record<BoardColumnKey, Partial<Idea>[]>> = {
   ],
 };
 
+/**
+ * How long one GitHub response is shared by every open tab. This is the board's
+ * rate-limit budget: N tabs polling collapse into one GitHub call per window.
+ */
+export const BOARD_CACHE_SECONDS = 15;
+
+/**
+ * Cached by default; `fresh` skips the shared cache for the handful of reads
+ * that must see the truth immediately — right after you move a card, or when
+ * you come back to the tab. Those are per-human actions, so they cost little.
+ */
+type ReadMode = { cache: "no-store" } | { next: { revalidate: number } };
+function readMode(fresh: boolean): ReadMode {
+  return fresh ? { cache: "no-store" } : { next: { revalidate: BOARD_CACHE_SECONDS } };
+}
+
 /** An empty bucket per column, derived from COLUMN_ORDER so new stages can't be missed. */
 function emptyColumns(): Board["columns"] {
   const columns = {} as Board["columns"];
@@ -277,7 +293,8 @@ function demoBoard(): Board {
   return { columns, source: "demo", fetchedAt: new Date().toISOString() };
 }
 
-export async function fetchBoard(): Promise<Board> {
+export async function fetchBoard({ fresh = false }: { fresh?: boolean } = {}): Promise<Board> {
+  const mode = readMode(fresh);
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
@@ -288,12 +305,12 @@ export async function fetchBoard(): Promise<Board> {
     const [res, prByIssue, runsRes] = await Promise.all([
       fetch(`https://api.github.com/repos/${SITE.repo}/issues?state=all&per_page=100&sort=updated`, {
         headers,
-        next: { revalidate: 15 },
+        ...mode,
       }),
-      fetchIdeaPulls(headers),
+      fetchIdeaPulls(headers, { fresh }),
       fetch(
         `https://api.github.com/repos/${SITE.repo}/actions/workflows/build-endorsed-idea.yml/runs?per_page=30`,
-        { headers, next: { revalidate: 15 } }
+        { headers, ...mode }
       ),
     ]);
     if (!res.ok) throw new Error(`GitHub API ${res.status}`);
@@ -322,7 +339,7 @@ export async function fetchBoard(): Promise<Board> {
     await Promise.all(
       [...columns.doing, ...columns.discussing].map(async (idea) => {
         if (idea.build && idea.build.status !== "failed") {
-          const progress = await fetchTaskProgress(idea.number, headers);
+          const progress = await fetchTaskProgress(idea.number, headers, fresh);
           if (progress) {
             idea.build.tasksDone = progress.done;
             idea.build.tasksTotal = progress.total;
