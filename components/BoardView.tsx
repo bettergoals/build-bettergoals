@@ -437,20 +437,23 @@ export default function BoardView({
         );
         if (!confirmed) return;
       }
-      // Done is meant to arrive on its own when the PR merges and the issue
-      // closes. Moving a card there by hand only swaps the label — it ships
-      // nothing — so say so plainly when the work is not actually merged.
+      // Done ships the idea: the server merges its pull request and, for the
+      // product site, promotes preview to production. Ask before deploying;
+      // when there is no PR at all, be clear that only the label changes.
       if (to === "done" && idea.pr?.state !== "merged") {
-        const detail = idea.pr
-          ? `Its pull request #${idea.pr.number} is ${idea.pr.state}, not merged.`
-          : `No pull request is linked to this idea yet.`;
-        const confirmed = window.confirm(
-          `Move “${idea.title}” to Done?\n\n${detail}\n\n` +
-            `Done only changes the label — it does not merge anything, and the website ` +
-            `will not update. The label normally applies itself once the pull request ` +
-            `merges and issue #${idea.number} closes.`
-        );
-        if (!confirmed) return;
+        const message = idea.pr
+          ? idea.pr.state === "open"
+            ? `Ship “${idea.title}” to production?\n\n` +
+              `This merges pull request #${idea.pr.number}` +
+              (idea.pr.base === "preview" ? `, promotes preview to main,` : "") +
+              ` and deploys the live site. Issue #${idea.number} closes as done.`
+            : `Move “${idea.title}” to Done?\n\n` +
+              `Its pull request #${idea.pr.number} was closed without merging, so nothing ` +
+              `will ship. Reopen the PR on GitHub first, or move the card back to Doing.`
+          : `Move “${idea.title}” to Done?\n\n` +
+            `No pull request is linked to this idea, so there is nothing to ship — ` +
+            `only the label changes and the website will not update.`;
+        if (!window.confirm(message)) return;
       }
       // Optimistic update, remembered until a server response agrees — polls in
       // flight must not drag the card back to where it used to be.
@@ -462,11 +465,25 @@ export default function BoardView({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ number: idea.number, to }),
         });
+        const data = (await res.json().catch(() => null)) as {
+          error?: string;
+          shipped?: { pr: { number: number }; live: boolean; site: string; promotion?: { number: number } } | null;
+        } | null;
         if (!res.ok) {
-          const data = (await res.json().catch(() => null)) as { error?: string } | null;
           throw new Error(data?.error ?? `Move failed (${res.status})`);
         }
-        if (to === "doing") showToast(`🤖 “${idea.title}” moved to Doing — Claude Code will pick it up.`);
+        if (to === "done" && data?.shipped) {
+          const s = data.shipped;
+          showToast(
+            s.live
+              ? `🚀 “${idea.title}” shipped — PR #${s.pr.number} merged` +
+                  (s.promotion ? ` and promoted to main` : "") +
+                  `. ${s.site} is deploying now.`
+              : `✅ PR #${s.pr.number} merged for “${idea.title}”.`
+          );
+        } else if (to === "done") {
+          showToast(`🏷️ “${idea.title}” marked Done — no pull request was linked, so nothing shipped.`);
+        } else if (to === "doing") showToast(`🤖 “${idea.title}” moved to Doing — Claude Code will pick it up.`);
         else if (to === "cancelled")
           showToast(`🛑 “${idea.title}” cancelled — issue #${idea.number} closed as not planned.`);
         else if (from === "cancelled")

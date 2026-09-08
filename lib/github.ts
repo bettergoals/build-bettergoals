@@ -1,6 +1,14 @@
-import { SITE } from "./config";
+import { BUILD_REPO, SITE } from "./config";
 
-export type IdeaPR = { url: string; number: number; state: "open" | "merged" | "closed" };
+export type IdeaPR = {
+  url: string;
+  number: number;
+  state: "open" | "merged" | "closed";
+  /** `owner/name` of the repo the PR lives in — the product repo or the build board */
+  repo: string;
+  /** branch the PR merges into (`preview` for product PRs, `main` for board PRs) */
+  base: string;
+};
 
 export type IdeaBuild = {
   status: "queued" | "in_progress" | "failed";
@@ -53,24 +61,63 @@ type GitHubPull = {
   merged_at: string | null;
   body?: string | null;
   head: { ref: string };
+  base: { ref: string };
 };
 
-/** Map issue number -> the PR Claude opened for it (branch `idea/N` or a closing keyword in the body). */
-function mapPullsToIdeas(pulls: GitHubPull[]): Map<number, IdeaPR> {
-  const map = new Map<number, IdeaPR>();
+/** Issue numbers on the product repo that a PR says it closes ("Closes #12" or "Closes owner/repo#12"). */
+function closedIssueNumbers(pr: GitHubPull, prRepo: string): Set<number> {
+  const nums = new Set<number>();
+  // Claude's branches are `idea/N` (build action) or `claude/issue-N-…` (claude-code-action).
+  const branchMatch = /^(?:idea\/|claude\/issue-)(\d+)(?:$|[^\d])/.exec(pr.head.ref);
+  if (branchMatch) nums.add(Number(branchMatch[1]));
+  const keyword = /(?:close[sd]?|fixe?[sd]?|resolve[sd]?)\s+(?:([\w.-]+\/[\w.-]+))?#(\d+)/gi;
+  for (const m of (pr.body ?? "").matchAll(keyword)) {
+    const qualifiedRepo = m[1]?.toLowerCase();
+    // A bare "#N" refers to the PR's own repo; only count it when that is the product repo.
+    const targetRepo = qualifiedRepo ?? prRepo.toLowerCase();
+    if (targetRepo === SITE.repo.toLowerCase()) nums.add(Number(m[2]));
+  }
+  return nums;
+}
+
+/** Map issue number -> the PR Claude opened for it, in whichever repo it landed. */
+function mapPullsToIdeas(pulls: GitHubPull[], prRepo: string, into = new Map<number, IdeaPR>()): Map<number, IdeaPR> {
   for (const pr of pulls) {
-    const nums = new Set<number>();
-    const branchMatch = /^idea\/(\d+)$/.exec(pr.head.ref);
-    if (branchMatch) nums.add(Number(branchMatch[1]));
-    for (const m of (pr.body ?? "").matchAll(/(?:close[sd]?|fixe?[sd]?|resolve[sd]?)\s+#(\d+)/gi)) {
-      nums.add(Number(m[1]));
-    }
     const state: IdeaPR["state"] = pr.merged_at ? "merged" : pr.state;
-    for (const n of nums) {
+    for (const n of closedIssueNumbers(pr, prRepo)) {
       // pulls arrive most-recently-updated first; keep the first match per issue
-      if (!map.has(n)) map.set(n, { url: pr.html_url, number: pr.number, state });
+      if (!into.has(n)) into.set(n, { url: pr.html_url, number: pr.number, state, repo: prRepo, base: pr.base.ref });
     }
   }
+  return into;
+}
+
+/**
+ * The pull request linked to each idea, looking in the product repo first and
+ * then the build board (whose PRs say "Closes bettergoals/bettergoals#N").
+ */
+export async function fetchIdeaPulls(
+  headers: Record<string, string>,
+  { fresh = false }: { fresh?: boolean } = {}
+): Promise<Map<number, IdeaPR>> {
+  const init = { headers, ...readMode(fresh) };
+  const repos = [SITE.repo, BUILD_REPO];
+  const results = await Promise.all(
+    repos.map(async (repo) => {
+      try {
+        const res = await fetch(
+          `https://api.github.com/repos/${repo}/pulls?state=all&per_page=100&sort=updated&direction=desc`,
+          init
+        );
+        if (!res.ok) return [] as GitHubPull[];
+        return (await res.json()) as GitHubPull[];
+      } catch {
+        return [] as GitHubPull[];
+      }
+    })
+  );
+  const map = new Map<number, IdeaPR>();
+  results.forEach((pulls, i) => mapPullsToIdeas(pulls, repos[i], map));
   return map;
 }
 
@@ -255,15 +302,12 @@ export async function fetchBoard({ fresh = false }: { fresh?: boolean } = {}): P
   if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
 
   try {
-    const [res, pullsRes, runsRes] = await Promise.all([
+    const [res, prByIssue, runsRes] = await Promise.all([
       fetch(`https://api.github.com/repos/${SITE.repo}/issues?state=all&per_page=100&sort=updated`, {
         headers,
         ...mode,
       }),
-      fetch(`https://api.github.com/repos/${SITE.repo}/pulls?state=all&per_page=100&sort=updated&direction=desc`, {
-        headers,
-        ...mode,
-      }),
+      fetchIdeaPulls(headers, { fresh }),
       fetch(
         `https://api.github.com/repos/${SITE.repo}/actions/workflows/build-endorsed-idea.yml/runs?per_page=30`,
         { headers, ...mode }
@@ -271,9 +315,6 @@ export async function fetchBoard({ fresh = false }: { fresh?: boolean } = {}): P
     ]);
     if (!res.ok) throw new Error(`GitHub API ${res.status}`);
     const issues = (await res.json()) as GitHubIssue[];
-    const prByIssue = pullsRes.ok
-      ? mapPullsToIdeas((await pullsRes.json()) as GitHubPull[])
-      : new Map<number, IdeaPR>();
     const numberByTitle = new Map(issues.filter((i) => !i.pull_request).map((i) => [i.title, i.number]));
     const buildByIssue = runsRes.ok
       ? mapRunsToIdeas(

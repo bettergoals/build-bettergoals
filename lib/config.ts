@@ -8,6 +8,16 @@ export const SITE = {
   repo: process.env.GITHUB_REPO ?? "bettergoals/bettergoals",
 };
 
+/** This repo — the board. Ideas about the board get their pull request here. */
+export const BUILD_REPO = process.env.BUILD_REPO ?? "bettergoals/build-bettergoals";
+
+/**
+ * The product's staging branch. Claude opens product pull requests against it;
+ * moving a card to Done merges the PR and then promotes this branch to production.
+ */
+export const PREVIEW_BRANCH = "preview";
+export const PRODUCTION_BRANCH = "main";
+
 export const PRODUCT_URL = "https://bettergoals.ai";
 export const PREVIEW_URL = "https://preview.bettergoals.ai";
 export const REPO_URL = `https://github.com/${SITE.repo}`;
