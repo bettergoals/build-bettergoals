@@ -219,65 +219,75 @@ function IdeaCard({
         </a>
       </div>
       {idea.excerpt && <p className="mt-2 text-xs leading-relaxed text-ink-soft">{idea.excerpt}</p>}
+      {/*
+        The footer holds an unpredictable number of badges — endorsed, building,
+        build failed, PR — so it must never assume they fit on one line. The meta
+        group takes the leftover width and wraps inside itself; the select keeps
+        its own width so its label and chevron are never squeezed off the card.
+      */}
       <div className="mt-3 flex items-center gap-2 text-xs text-ink-soft">
-        {idea.avatar ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={idea.avatar} alt="" className="h-4 w-4 rounded-full" />
-        ) : null}
-        <span>@{idea.author}</span>
-        <span>·</span>
-        <a href={idea.url} target="_blank" rel="noreferrer" className="hover:underline">💬 {idea.comments}</a>
-        {endorsed && <span className="font-semibold text-sooner">endorsed</span>}
-        {idea.build && idea.build.status !== "failed" && (
-          <a
-            href={idea.build.url}
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-center gap-1.5 rounded-full bg-happier/15 px-2 py-0.5 font-bold text-happier"
-            title="Claude Code is building this — click to watch the run"
-          >
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-happier opacity-75" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-happier" />
-            </span>
-            building{elapsed(idea.build.startedAt)}
-            {idea.build.tasksTotal ? ` · ${idea.build.tasksDone}/${idea.build.tasksTotal}` : ""}
-          </a>
-        )}
-        {idea.build?.status === "failed" && !idea.pr && (
-          <a
-            href={idea.build.url}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-full bg-red-100 px-2 py-0.5 font-bold text-red-600"
-            title="The build failed — click for logs"
-          >
-            build failed ↗
-          </a>
-        )}
-        {idea.pr && (
-          <a
-            href={idea.pr.url}
-            target="_blank"
-            rel="noreferrer"
-            className={`rounded-full px-2 py-0.5 font-bold ${
-              idea.pr.state === "merged"
-                ? "bg-sooner/15 text-sooner"
-                : idea.pr.state === "open"
-                  ? "bg-happier/15 text-happier"
-                  : "bg-ink/10 text-ink-soft"
-            }`}
-            title={`Pull request #${idea.pr.number} (${idea.pr.state}) — review the build`}
-          >
-            {idea.pr.state === "merged" ? "PR ✓" : "PR ↗"}
-          </a>
-        )}
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1.5">
+          {idea.avatar ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={idea.avatar} alt="" className="h-4 w-4 shrink-0 rounded-full" />
+          ) : null}
+          <span className="truncate">@{idea.author}</span>
+          <span>·</span>
+          <a href={idea.url} target="_blank" rel="noreferrer" className="hover:underline">💬 {idea.comments}</a>
+          {endorsed && <span className="font-semibold text-sooner">endorsed</span>}
+          {idea.build && idea.build.status !== "failed" && (
+            <a
+              href={idea.build.url}
+              target="_blank"
+              rel="noreferrer"
+              className="flex max-w-full items-center gap-1.5 rounded-full bg-happier/15 px-2 py-0.5 font-bold text-happier"
+              title="Claude Code is building this — click to watch the run"
+            >
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-happier opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-happier" />
+              </span>
+              <span className="truncate">
+                building{elapsed(idea.build.startedAt)}
+                {idea.build.tasksTotal ? ` · ${idea.build.tasksDone}/${idea.build.tasksTotal}` : ""}
+              </span>
+            </a>
+          )}
+          {idea.build?.status === "failed" && !idea.pr && (
+            <a
+              href={idea.build.url}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-full bg-red-100 px-2 py-0.5 font-bold text-red-600"
+              title="The build failed — click for logs"
+            >
+              build failed ↗
+            </a>
+          )}
+          {idea.pr && (
+            <a
+              href={idea.pr.url}
+              target="_blank"
+              rel="noreferrer"
+              className={`rounded-full px-2 py-0.5 font-bold ${
+                idea.pr.state === "merged"
+                  ? "bg-sooner/15 text-sooner"
+                  : idea.pr.state === "open"
+                    ? "bg-happier/15 text-happier"
+                    : "bg-ink/10 text-ink-soft"
+              }`}
+              title={`Pull request #${idea.pr.number} (${idea.pr.state}) — review the build`}
+            >
+              {idea.pr.state === "merged" ? "PR ✓" : "PR ↗"}
+            </a>
+          )}
+        </div>
         {canMove && (
           <select
             aria-label="Move to column"
             value={column}
             onChange={(e) => onMove(idea, column, e.target.value as BoardColumnKey)}
-            className="ml-auto rounded-md border border-ink/15 bg-chalk px-1 py-0.5 text-[11px] text-ink-soft"
+            className="shrink-0 rounded-md border border-ink/15 bg-chalk px-1 py-0.5 text-[11px] text-ink-soft"
           >
             {COLUMN_ORDER.map((c) => (
               <option key={c.key} value={c.key}>
