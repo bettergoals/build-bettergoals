@@ -19,7 +19,8 @@ export default async function BuilderBoard() {
         and opens a pull request for the community to review on preview. Changed your mind? Move a
         card to <strong>Cancelled</strong> and its issue closes as not planned — move it back to an
         active column any time to reopen it. The board keeps itself up to date as the room votes and
-        moves cards, so you never need to refresh the page.
+        moves cards, so you never need to refresh the page — and when an idea ships, every open
+        board in the community celebrates together.
       </p>
       <div className="mt-8">
         <BoardView initial={board} builder initialUnlocked={unlocked} />

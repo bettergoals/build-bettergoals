@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import type { Board, BoardColumnKey, Idea } from "@/lib/github";
 import { COLUMN_ORDER } from "@/lib/github";
 import { ENDORSE_THRESHOLD, NEW_IDEA_URL } from "@/lib/config";
+import ShipCelebration, { type Celebration } from "./ShipCelebration";
+import { playShipChime } from "@/lib/celebrate";
 
 const COLUMN_ACCENT: Record<BoardColumnKey, string> = {
   idea: "border-t-ink/30",
@@ -15,6 +17,8 @@ const COLUMN_ACCENT: Record<BoardColumnKey, string> = {
 
 /** How often a visible tab re-reads the board. Hidden tabs do not poll at all. */
 const POLL_MS = 10_000;
+/** Remembers whether the room wants the ship chime, between visits. */
+const SOUND_KEY = "bettergoals.celebrate.sound";
 /** Give up re-applying an unconfirmed move after this long and trust the server. */
 const PENDING_TTL_MS = 90_000;
 
@@ -354,6 +358,64 @@ function UnlockBar({ onUnlocked }: { onUnlocked: () => void }) {
   );
 }
 
+/**
+ * Whether this browser wants the ship chime, as an external store over
+ * localStorage. The server (and the first client render) assume sound is on, so
+ * a muted board settles to muted straight after hydration with nothing to
+ * mismatch on — and a mute in one tab reaches the others through `storage`.
+ */
+const sound = {
+  listeners: new Set<() => void>(),
+  subscribe(listener: () => void) {
+    sound.listeners.add(listener);
+    window.addEventListener("storage", listener);
+    return () => {
+      sound.listeners.delete(listener);
+      window.removeEventListener("storage", listener);
+    };
+  },
+  getSnapshot: () => {
+    try {
+      return window.localStorage.getItem(SOUND_KEY) !== "off";
+    } catch {
+      return true; // no storage available — celebrate anyway
+    }
+  },
+  getServerSnapshot: () => true,
+  set(on: boolean) {
+    try {
+      window.localStorage.setItem(SOUND_KEY, on ? "on" : "off");
+    } catch {
+      /* private mode — the preference just will not stick */
+    }
+    for (const listener of sound.listeners) listener();
+  },
+};
+
+/**
+ * Turning the chime on plays it once. That is the preview people expect, and
+ * the click doubles as the user gesture browsers insist on before a tab is
+ * allowed to make any noise at all.
+ */
+function SoundToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={on}
+      className="inline-flex items-center gap-1.5 rounded-full border border-ink/15 px-2 py-0.5 text-xs font-medium text-ink-soft hover:bg-ink/5"
+      title={
+        on
+          ? "A chime plays when an idea ships — click to mute"
+          : "Ship chime muted — click to unmute and hear it"
+      }
+    >
+      <span aria-hidden>{on ? "🔔" : "🔇"}</span>
+      <span>{on ? "Celebrations on" : "Muted"}</span>
+    </button>
+  );
+}
+
 export default function BoardView({
   initial,
   builder = false,
@@ -373,6 +435,51 @@ export default function BoardView({
   const [syncing, setSyncing] = useState(false);
   const [offline, setOffline] = useState(false);
   const pending = useRef(new Map<number, PendingMove>());
+  const [celebration, setCelebration] = useState<Celebration | null>(null);
+  const soundOn = useSyncExternalStore(sound.subscribe, sound.getSnapshot, sound.getServerSnapshot);
+  // Ideas already sitting in Done when we arrived. Confetti is for news only.
+  const doneSeen = useRef(new Set(initial.columns.done.map((i) => i.number)));
+  const doneSource = useRef(initial.source);
+
+  // Stable so the celebration's own dismissal timer is not restarted by every
+  // poll-driven re-render of the board.
+  const endCelebration = useCallback(() => setCelebration(null), []);
+
+  const toggleSound = useCallback(() => {
+    const on = !sound.getSnapshot();
+    sound.set(on);
+    if (on) playShipChime();
+  }, []);
+
+  /**
+   * Fires the celebration for any idea that has newly landed in Done. Driven by
+   * the board polling rather than by the move itself, so every open tab in the
+   * room throws confetti — not only the facilitator who dragged the card.
+   */
+  const celebrateNewlyShipped = useCallback((next: Board) => {
+    // A first look, or a swap between live and demo data, is not news: adopt
+    // the world as it stands so nobody is congratulated for ancient history.
+    if (doneSource.current !== next.source) {
+      doneSource.current = next.source;
+      doneSeen.current = new Set(next.columns.done.map((i) => i.number));
+      return;
+    }
+    const shipped = next.columns.done.filter((i) => !doneSeen.current.has(i.number));
+    for (const idea of next.columns.done) doneSeen.current.add(idea.number);
+    if (shipped.length === 0) return;
+    const first = shipped[0];
+    setCelebration({
+      key: first.number,
+      headline: shipped.length === 1 ? `“${first.title}”` : `${shipped.length} ideas just went live`,
+      detail:
+        shipped.length === 1
+          ? `Endorsed by the community, built by Claude${
+              first.pr?.state === "merged" ? `, PR #${first.pr.number} merged` : ""
+            } — thank you.`
+          : shipped.map((i) => i.title).join(" · "),
+    });
+    if (sound.getSnapshot()) playShipChime();
+  }, []);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -390,6 +497,7 @@ export default function BoardView({
       const next = applyPendingMoves((await res.json()) as Board, pending.current);
       // Most polls bring no news; skipping those keeps drags and selects steady.
       setBoard((prev) => (sameBoard(prev, next) ? prev : next));
+      celebrateNewlyShipped(next);
       setSyncedAt(Date.now());
       setOffline(false);
     } catch {
@@ -397,7 +505,7 @@ export default function BoardView({
     } finally {
       setSyncing(false);
     }
-  }, []);
+  }, [celebrateNewlyShipped]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -553,6 +661,7 @@ export default function BoardView({
               onRefresh={() => refresh(true)}
             />
           )}
+          <SoundToggle on={soundOn} onToggle={toggleSound} />
         </div>
         <a
           href={NEW_IDEA_URL}
@@ -607,6 +716,7 @@ export default function BoardView({
           {toast}
         </div>
       )}
+      <ShipCelebration celebration={celebration} onDone={endCelebration} />
     </div>
   );
 }
