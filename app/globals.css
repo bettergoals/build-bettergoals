@@ -7,6 +7,38 @@
   --color-sooner: #10b981;
   --color-safer: #38bdf8;
   --color-happier: #f59e0b;
+
+  /* Shipping an idea is worth a party — see components/ShipCelebration.tsx */
+  --animate-confetti: confetti-fall 3s linear forwards;
+  --animate-ship-pop: ship-pop 4.2s ease-out forwards;
+}
+
+@keyframes confetti-fall {
+  from {
+    transform: translate3d(0, -10vh, 0) rotate(0deg);
+    opacity: 1;
+  }
+  to {
+    transform: translate3d(var(--confetti-drift, 0), 105vh, 0) rotate(var(--confetti-spin, 720deg));
+    opacity: 0.9;
+  }
+}
+
+@keyframes ship-pop {
+  0% {
+    transform: scale(0.9) translateY(10px);
+    opacity: 0;
+  }
+  8% {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 :root {
