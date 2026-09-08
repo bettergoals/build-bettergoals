@@ -2,13 +2,22 @@ import { type NextRequest, NextResponse } from "next/server";
 import { SITE } from "@/lib/config";
 import { BUILDER_COOKIE, passcodeValid } from "@/lib/builder";
 import { CLOSED_COLUMNS, COLUMN_ORDER, type BoardColumnKey } from "@/lib/github";
+import { ShipError, shipIdea, type ShipResult } from "@/lib/ship";
 
 const STAGE_LABELS: BoardColumnKey[] = COLUMN_ORDER.map((c) => c.key);
+
+// Shipping merges up to two pull requests and waits on GitHub in between.
+export const maxDuration = 60;
 
 /**
  * Moves an idea between board columns by swapping its stage label on GitHub.
  * Requires the facilitator passcode (httpOnly cookie set by /api/board/unlock,
  * or an x-passcode header) and a GITHUB_TOKEN with issues:write on the repo.
+ *
+ * Moving to Done ships the idea: its pull request is merged and, for product
+ * PRs on `preview`, that branch is promoted to `main` so the site deploys.
+ * Only then is the issue labelled `done` and closed as completed. If the merge
+ * fails nothing is relabelled, so the board keeps telling the truth.
  *
  * Cancelling also closes the issue as "not planned"; moving a cancelled idea
  * back to an active column reopens it, so a mistaken cancel is always undoable.
@@ -56,9 +65,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `GitHub: ${issueRes.status}` }, { status: 502 });
   }
   const issue = (await issueRes.json()) as {
+    title: string;
     labels: ({ name?: string } | string)[];
     state: "open" | "closed";
   };
+
+  let shipped: ShipResult | null = null;
+  if (to === "done") {
+    try {
+      shipped = await shipIdea(number, issue.title, headers);
+    } catch (err) {
+      if (err instanceof ShipError) return NextResponse.json({ error: err.message }, { status: err.status });
+      throw err;
+    }
+  }
   const current = issue.labels
     .map((l) => (typeof l === "string" ? l : l.name ?? ""))
     .filter(Boolean);
@@ -74,6 +94,11 @@ export async function POST(req: NextRequest) {
     // Cancelling parks the idea: closed as "not planned", visibly not shipped.
     update.state = "closed";
     update.state_reason = "not_planned";
+  } else if (to === "done" && shipped) {
+    // The work is live, so the issue is complete. (Merging to main would close
+    // it anyway via "Closes #N"; doing it here makes the board consistent now.)
+    update.state = "closed";
+    update.state_reason = "completed";
   } else if (issue.state === "closed" && !CLOSED_COLUMNS.includes(to)) {
     // Pulling a cancelled (or closed) idea back into play reopens the issue,
     // otherwise it would stay closed and drop off the board entirely.
@@ -89,5 +114,5 @@ export async function POST(req: NextRequest) {
   if (!patch.ok) {
     return NextResponse.json({ error: `GitHub: ${patch.status}` }, { status: 502 });
   }
-  return NextResponse.json({ ok: true, number, to });
+  return NextResponse.json({ ok: true, number, to, shipped });
 }
